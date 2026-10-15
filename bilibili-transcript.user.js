@@ -213,7 +213,7 @@
             warning: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 9v4M12 17h.01"/><path d="M12 22c5.523 0 10-4.477 10-10S17.523 2 12 2 2 6.477 2 12s4.477 10 10 10z"/></svg>',
             info: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>'
         };
-        toast.innerHTML = `<span class="toast-icon">${icons[type]}</span><span class="toast-message">${message}</span>`;
+        toast.innerHTML = `<span class="toast-icon">${icons[type]}</span><span class="toast-message">${sanitizeInput(message)}</span>`;
         document.body.appendChild(toast);
         setTimeout(() => {
             toast.style.animation = 'slideUp 0.3s cubic-bezier(0.16, 1, 0.3, 1)';
@@ -229,29 +229,27 @@
 
     function escapeCSV(value) {
         if (typeof value !== 'string') return '';
-        return value.includes(',') || value.includes('"') || value.includes('\n')
+        // Excel 等软件会把危险起始字符解释为公式；CSV 引号本身不能阻止计算。
+        if (/^[\s\uFEFF]*[=+@-]/.test(value) || /^[\t\r\n]/.test(value)) value = "'" + value;
+        return /[,"\r\n]/.test(value)
             ? '"' + value.replace(/"/g, '""') + '"'
             : value;
     }
 
-    function getCookies() {
-        return Object.fromEntries(
-            document.cookie.split(';').map(c => c.trim().split('=')).filter(([k, v]) => k && v)
-        );
-    }
-
     function getHeaders() {
-        const cookies = getCookies();
-        const cookieString = Object.entries(cookies).map(([k, v]) => `${k}=${v}`).join('; ');
         return {
             'Referer': 'https://www.bilibili.com',
-            'User-Agent': navigator.userAgent,
-            'Cookie': cookieString.trim()
+            'User-Agent': navigator.userAgent
         };
     }
 
     async function request(url, options = {}) {
         const { timeout = CONFIG.REQUEST_TIMEOUT, retries = CONFIG.REQUEST_RETRIES, retryDelay = CONFIG.REQUEST_RETRY_DELAY, raw = false } = options;
+        const target = new URL(url);
+        if (target.protocol !== 'https:' || target.username || target.password || target.port ||
+            !['api.bilibili.com', 'aisubtitle.hdslb.com'].includes(target.hostname)) {
+            throw new SubtitleError(ErrorTypes.VALIDATION_ERROR, '不允许的请求地址');
+        }
 
         return new Promise((resolve, reject) => {
             let attempts = 0;
@@ -266,6 +264,8 @@
                     method: options.method || 'GET',
                     url: url,
                     headers: options.headers || getHeaders(),
+                    // 仅 B 站 API 使用浏览器已有登录态，字幕 CDN 请求不携带 Cookie。
+                    anonymous: target.hostname !== 'api.bilibili.com',
                     timeout: timeout,
                     onload: (response) => {
                         clearTimeout(timer);
@@ -406,6 +406,21 @@
 
     function convertToTXT(content, includeTime = false) {
         return content.map(item => includeTime ? `${formatTime(item.from, 'srt')} ${item.content}` : item.content).join('\n');
+    }
+
+    function convertToHTML(content, includeTime = false) {
+        return content.map(item => {
+            const text = sanitizeInput(item.content);
+            return includeTime ? `${formatTime(item.from, 'srt')} ${text}` : text;
+        }).join('<br>\n');
+    }
+
+    function highlightSubtitleContent(content, keyword) {
+        if (!keyword) return sanitizeInput(content);
+        const pattern = new RegExp(`(${keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi');
+        return content.split(pattern).map((part, index) => index % 2
+            ? `<span class="highlight">${sanitizeInput(part)}</span>`
+            : sanitizeInput(part)).join('');
     }
 
     function formatDuration(seconds) {
@@ -628,13 +643,10 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         const subtitleHtml = state.subtitleDetails.map((item, index) => {
             const time = formatTime(item.from);
             const isHighlighted = item.content.toLowerCase().includes(lowerKeyword);
-            const highlightedContent = item.content.replace(
-                new RegExp(`(${keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi'),
-                '<span class="highlight">$1</span>'
-            );
+            const highlightedContent = highlightSubtitleContent(item.content, keyword);
 
             return `
-                <div class="subtitle-item ${isHighlighted ? 'search-match' : ''}" data-index="${index}" data-time="${item.from}">
+                <div class="subtitle-item ${isHighlighted ? 'search-match' : ''}" data-index="${index}" data-time="${Number(item.from) || 0}">
                     <span class="subtitle-time">[${time}]</span>
                     <span class="subtitle-text">${highlightedContent}</span>
                 </div>
@@ -853,7 +865,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
         const options = subtitles.map((subtitle, index) => {
             const hasUrl = subtitle.url?.trim();
-            return `<div class="custom-select-option" data-value="${index}" ${!hasUrl ? 'class="custom-select-option disabled"' : ''}>${subtitle.lan}${hasUrl ? '' : ' (不可用)'}</div>`;
+            return `<div class="custom-select-option" data-value="${index}" ${!hasUrl ? 'class="custom-select-option disabled"' : ''}>${sanitizeInput(subtitle.lan)}${hasUrl ? '' : ' (不可用)'}</div>`;
         }).join('');
 
         const defaultIndex = subtitles.findIndex(s => s.url?.trim());
@@ -862,7 +874,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         container.innerHTML = `
             <div class="custom-select">
                 <div class="custom-select-trigger" id="subtitle-select-trigger">
-                    <span class="custom-select-value">${defaultSubtitle.lan}</span>
+                    <span class="custom-select-value">${sanitizeInput(defaultSubtitle.lan)}</span>
                     <span class="custom-select-icon-wrapper">
                         <svg viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"/></svg>
                     </span>
@@ -927,7 +939,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         const subtitleHtml = content.map((item, index) => {
             const time = formatTime(item.from);
             return `
-                <div class="subtitle-item" data-index="${index}" data-time="${item.from}">
+                <div class="subtitle-item" data-index="${index}" data-time="${Number(item.from) || 0}">
                     <span class="subtitle-time">[${time}]</span>
                     <span class="subtitle-text">${sanitizeInput(item.content)}</span>
                 </div>
@@ -1092,7 +1104,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                     <div class="download-section">
                         <label class="download-label">输出格式:</label>
                         <div class="download-format-display">
-                            <span>${settings.format.toUpperCase()}</span>
+                            <span>${sanitizeInput(settings.format.toUpperCase())}</span>
                             <span class="format-hint">(可在设置中修改)</span>
                         </div>
                     </div>
@@ -1169,9 +1181,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                 case 'ass': convertedContent = convertToASS(content, state.currentVideo.title); break;
                 case 'lrc': convertedContent = convertToLRC(content); break;
                 case 'html':
-                    convertedContent = settings.includeSubtitleTime
-                        ? content.map(item => `${formatTime(item.from, 'srt')} ${item.content}`).join('<br>\n')
-                        : content.map(item => item.content).join('<br>\n');
+                    convertedContent = convertToHTML(content, settings.includeSubtitleTime);
                     break;
                 default:
                     convertedContent = convertToTXT(content, settings.includeSubtitleTime);
@@ -1193,7 +1203,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             case 'newtab':
                 const blob = new Blob(['\uFEFF' + content], { type: `${mimeType};charset=UTF-8` });
                 const url = URL.createObjectURL(blob);
-                window.open(url, '_blank');
+                window.open(url, '_blank', 'noopener,noreferrer');
                 setTimeout(() => URL.revokeObjectURL(url), 100);
                 showToast('已在新标签页打开', 'success');
                 break;
@@ -1294,8 +1304,8 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                                 </div>
                             `).join('')}
                             ${customExtensions.map((ext, index) => `
-                                <div class="format-item ${settings.format === ext.value ? 'selected' : ''}" data-value="${ext.value}" data-custom="true" data-index="${index}" data-mime="${ext.mimeType}">
-                                    <span class="format-name">${ext.name}</span>
+                                <div class="format-item ${settings.format === ext.value ? 'selected' : ''}" data-value="${sanitizeInput(ext.value)}" data-custom="true" data-index="${index}" data-mime="${sanitizeInput(ext.mimeType)}">
+                                    <span class="format-name">${sanitizeInput(ext.name)}</span>
                                     <button class="remove-ext-btn">删除</button>
                                 </div>
                             `).join('')}
@@ -1472,7 +1482,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                     <div class="batch-section">
                         <h3>输出格式</h3>
                         <div style="padding: 12px 14px; background: var(--bg-surface); border: 1px solid var(--border); border-radius: 10px; font-size: 14px; color: var(--text-secondary);">
-                            当前设置: <span style="color: var(--text-primary); font-weight: 500;">${StorageManager.getDownloadSettings().format.toUpperCase()}</span>
+                            当前设置: <span style="color: var(--text-primary); font-weight: 500;">${sanitizeInput(StorageManager.getDownloadSettings().format.toUpperCase())}</span>
                             <span style="margin-left: 8px; font-size: 12px; color: var(--text-muted);">(可在设置中修改)</span>
                         </div>
                     </div>

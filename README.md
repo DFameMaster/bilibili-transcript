@@ -4,6 +4,17 @@
 
 ---
 
+### 安全回归测试
+
+使用 Node.js 18 或更新版本运行，无需安装依赖：
+
+```bash
+node --check bilibili-transcript.user.js
+node --test tests/security.test.cjs
+```
+
+测试覆盖恶意字幕的搜索高亮与 HTML 导出、CSV 公式注入、纯文字导出，以及请求地址校验和 Cookie 隔离。测试模拟脚本管理器的请求接口，不访问网络；真实登录态和浏览器兼容性仍需在浏览器中验证。
+
 ## 中文
 
 ### 简介
